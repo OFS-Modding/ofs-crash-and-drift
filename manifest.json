@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "ofs.crash-and-drift",
+  "name": "Crash & Drift",
+  "version": "0.1.2",
+  "description": "Vehicles struck by the local driver explode visually and disappear; hold Shift while driving for reduced traction.",
+  "author": "OFS-Modding contributors",
+  "assembly": "OFS.CrashAndDriftMod.dll",
+  "entryPoint": "OFS.CrashAndDriftMod.CrashAndDriftMod",
+  "sdkVersion": "0.1.0",
+  "dependencies": [],
+  "capabilities": [
+    "assets.bundle-set",
+    "hooks.il2cpp",
+    "input.keyboard",
+    "world.local"
+  ],
+  "multiplayer": "incompatible"
+}

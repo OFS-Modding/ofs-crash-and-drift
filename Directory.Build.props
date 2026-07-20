@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <PathMap>$(MSBuildProjectDirectory)=/_/$(MSBuildProjectName)</PathMap>
+  </PropertyGroup>
+</Project>

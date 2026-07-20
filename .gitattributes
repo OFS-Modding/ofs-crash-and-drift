@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.dll binary
+*.exe binary
+*.nupkg binary
+*.ofmod binary
+*.png binary
+*.jpg binary
+*.zip binary

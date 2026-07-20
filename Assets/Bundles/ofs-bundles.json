@@ -1,0 +1,14 @@
+{
+    "schemaVersion": 1,
+    "unityVersion": "6000.3.13f1",
+    "buildTarget": "StandaloneWindows64",
+    "bundles": [
+        {
+            "name": "ofs-crash-and-drift-vfx",
+            "bytes": 51277,
+            "sha256": "54b5124f05ffaccf1789d8b49ae186e3376a1c8fc5633893c69a75735cddacf9",
+            "unityHash": "8ff00c07b160c2fde2df4ff26663944c",
+            "dependencies": []
+        }
+    ]
+}

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>OFS.CrashAndDriftMod</AssemblyName>
+    <RootNamespace>OFS.CrashAndDriftMod</RootNamespace>
+    <OutputPath>artifacts\dist\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="authoring\**\*.cs" />
+    <PackageReference Include="OFS.Sdk" Version="0.1.0" ExcludeAssets="runtime" />
+    <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="README.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('Assets\Bundles\ofs-crash-and-drift-vfx')">
+    <None Include="Assets\Bundles\ofs-bundles.json" CopyToOutputDirectory="PreserveNewest" TargetPath="Assets\Bundles\ofs-bundles.json" />
+    <None Include="Assets\Bundles\ofs-crash-and-drift-vfx" CopyToOutputDirectory="PreserveNewest" TargetPath="Assets\Bundles\ofs-crash-and-drift-vfx" />
+  </ItemGroup>
+
+</Project>

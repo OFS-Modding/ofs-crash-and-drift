@@ -1,0 +1,55 @@
+# Local analysis inputs and generated artifacts
+.work/
+artifacts/
+docs/[0-9][0-9]-*.md
+tools/
+!tools/
+tools/*
+!tools/OFS.AssetAuthoring/
+!tools/OFS.AssetAuthoring/**
+tools/OFS.AssetAuthoring/Library/
+tools/OFS.AssetAuthoring/Logs/
+tools/OFS.AssetAuthoring/Temp/
+tools/OFS.AssetAuthoring/UserSettings/
+tools/OFS.AssetAuthoring/Build/
+examples/OFS.CrashAndDriftMod/Assets/Bundles/Bundles
+examples/OFS.CrashAndDriftMod/Assets/Bundles/*.manifest
+examples/OFS.CrashAndDriftMod/Assets/Bundles/ofs-crash-and-drift-vfx
+.tools/
+.secrets/
+private.pem
+*.private.pem
+third_party/*.zip
+third_party/minhook/.github/
+third_party/minhook/build/
+third_party/minhook/cmake/
+third_party/minhook/dll_resources/
+
+# Runtime output and crash material
+logs/
+crashdumps/
+GameAssembly.dll
+UnityPlayer.dll
+global-metadata.dat
+Ore Factory Squad.exe
+SAVE.GZ
+Player.log
+Player-prev.log
+*.dmp
+*.sav
+*.save
+*.nupkg
+*.ofmod
+*.pfx
+*.p12
+*.key
+.env
+.env.*
+!.env.example
+
+# Local IDE/build state (once code work begins)
+.vs/
+bin/
+obj/
+*.user
+*.suo
