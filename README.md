@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" width="128" alt="OFS-Modding">
+  <img src="Assets/logo.png" width="128" alt="OFS-Modding">
 </p>
 
 # Crash & Drift
