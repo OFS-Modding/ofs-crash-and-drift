@@ -8,7 +8,6 @@ public sealed class CrashAndDriftMod : IOFSMod
     private const string GameAssembly = "Assembly-CSharp.dll";
     private const string CoreAssembly = "UnityEngine.CoreModule.dll";
     private const string PhysicsAssembly = "UnityEngine.PhysicsModule.dll";
-    private const string ParticleAssembly = "UnityEngine.ParticleSystemModule.dll";
     private const float SidewaysGripMultiplier = 0.22f;
     private const float MinimumGripMultiplier = 0.2f;
     private const float DriftYawMultiplier = 1.45f;
@@ -19,8 +18,12 @@ public sealed class CrashAndDriftMod : IOFSMod
     private HandleCollisionDelegate? _originalCollision;
     private IModInputAction? _leftShift;
     private IModInputAction? _rightShift;
-    private IModAssetBundleSet? _vfxSet;
-    private UnityObject _explosionPrefab;
+    private IModMesh? _explosionMesh;
+    private IModMaterial? _flashMaterial;
+    private IModMaterial? _smokeMaterial;
+    private UnityObject _resourceAnchor;
+    private readonly List<IDisposable> _resourceAnchorBindings = [];
+    private readonly List<ExplosionEffect> _explosionEffects = [];
     private bool _leftHeld;
     private bool _rightHeld;
     private bool _unloading;
@@ -47,7 +50,7 @@ public sealed class CrashAndDriftMod : IOFSMod
     private nint _collisionGetGameObject;
     private nint _componentGetGameObject;
     private nint _transformGetParent;
-    private nint _networkServerDestroy;
+    private nint _deactivateTrafficVehicle;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void HandleCollisionDelegate(nint instance, nint collision, nint methodInfo);
@@ -75,10 +78,9 @@ public sealed class CrashAndDriftMod : IOFSMod
         _leftShift = RegisterShift(ModKey.LeftShift, "drift-left-shift");
         _rightShift = RegisterShift(ModKey.RightShift, "drift-right-shift");
 
-        context.Events.SceneLoaded += OnSceneLoaded;
         context.Events.SceneUnloaded += OnSceneUnloaded;
+        context.Events.SceneLoaded += OnSceneLoaded;
         context.Events.FrameUpdate += OnFrame;
-        context.Events.MainMenuReady += OnMainMenuReady;
         context.Log.Info(
             "Crash & Drift loaded: collision destruction is visual-only and Shift drift assist is ready; " +
             $"traffic={_vehicleComponentAssembly ?? "unavailable"}.");
@@ -90,17 +92,15 @@ public sealed class CrashAndDriftMod : IOFSMod
         RestoreDriftIfAlive();
         if (_context is not null)
         {
-            _context.Events.SceneLoaded -= OnSceneLoaded;
             _context.Events.SceneUnloaded -= OnSceneUnloaded;
+            _context.Events.SceneLoaded -= OnSceneLoaded;
             _context.Events.FrameUpdate -= OnFrame;
-            _context.Events.MainMenuReady -= OnMainMenuReady;
         }
         _leftShift?.Dispose();
         _rightShift?.Dispose();
         _collisionHook?.Dispose();
-        _vfxSet?.Unload(unloadLoadedObjects: false);
+        ReleaseExplosionVisuals();
         _pendingTargets.Clear();
-        _explosionPrefab = default;
     }
 
     private IModInputAction RegisterShift(ModKey key, string id) =>
@@ -116,27 +116,24 @@ public sealed class CrashAndDriftMod : IOFSMod
             Trigger: InputTrigger.Held | InputTrigger.Released,
             CapturePolicy: InputCapturePolicy.Always));
 
-    private void OnSceneLoaded(SceneEvent scene)
-    {
-        if (!string.Equals(scene.Name, "Factory", StringComparison.OrdinalIgnoreCase)) return;
-        LoadExplosionVfx();
-    }
-
-    private void OnMainMenuReady(IMainMenuApi _) => LoadExplosionVfx();
-
     private void OnSceneUnloaded(SceneEvent scene)
     {
         if (!string.Equals(scene.Name, "Factory", StringComparison.OrdinalIgnoreCase)) return;
         RestoreDriftIfAlive();
         _pendingTargets.Clear();
-        _explosionPrefab = default;
-        _vfxSet?.Unload(unloadLoadedObjects: false);
-        _vfxSet = null;
+        ReleaseExplosionVisuals();
+    }
+
+    private void OnSceneLoaded(SceneEvent scene)
+    {
+        if (string.Equals(scene.Name, "Factory", StringComparison.OrdinalIgnoreCase))
+            PrepareExplosionVisuals();
     }
 
     private void OnFrame(FrameEvent _)
     {
         if (_unloading || _context is null) return;
+        UpdateExplosionEffects(_.DeltaTime);
         try
         {
             if ((_leftHeld || _rightHeld) && !_driftFaulted) ApplyDriftToLocalDriver();
@@ -173,7 +170,8 @@ public sealed class CrashAndDriftMod : IOFSMod
             var attacker = FindVehicleRoot(attackerObject);
             var otherObject = _api!.Invoke(_collisionGetGameObject, collision);
             var target = FindVehicleRoot(otherObject);
-            if (target.GameObject == 0 || target.GameObject == attacker.GameObject ||
+            if (target.Kind != VehicleKind.Traffic || target.GameObject == 0 ||
+                target.GameObject == attacker.GameObject ||
                 !_pendingTargets.Add(target.GameObject)) return;
 
             _context!.MainThread.Post(() => ExplodeAndRemove(target));
@@ -195,17 +193,7 @@ public sealed class CrashAndDriftMod : IOFSMod
         {
             position = _context.Unity.GetTransform(new UnityObject(target.GameObject)).Position;
 
-            if (target.Kind == VehicleKind.Scc && _context.Network.IsServerActive)
-            {
-                _api!.Invoke(
-                    _networkServerDestroy,
-                    0,
-                    Il2CppArgument.FromReference(target.GameObject));
-            }
-            else
-            {
-                _context.Unity.SetActive(new UnityObject(target.GameObject), false);
-            }
+            _ = _api!.Invoke(_deactivateTrafficVehicle, target.Component);
 
             _context.Log.Info(
                 $"Collision removed {target.Kind} vehicle at " +
@@ -217,20 +205,168 @@ public sealed class CrashAndDriftMod : IOFSMod
             return;
         }
 
-        if (_explosionPrefab.IsNull) return;
         try
         {
-            var vfx = _context.Unity.CloneGameObject(_explosionPrefab);
-            _context.Unity.SetTransform(
-                vfx,
-                new UnityTransform(position, UnityQuaternion.Identity, UnityVector3.One));
-            _context.Unity.SetName(vfx, "Crash & Drift Visual Explosion");
+            SpawnExplosionEffect(position, "Flash", _flashMaterial!, 0.45f, 4.5f, 0.55f);
+            SpawnExplosionEffect(
+                new UnityVector3(position.X, position.Y + 0.8f, position.Z),
+                "Smoke",
+                _smokeMaterial!,
+                0.8f,
+                3.2f,
+                1.1f);
+            _context.Log.Info("Traffic explosion VFX spawned successfully.");
         }
         catch (Exception exception)
         {
-            _context.Log.Warning(
-                $"Vehicle was removed, but its visual explosion could not be spawned: {exception.Message}");
+            _context.Log.Error(
+                exception,
+                "Vehicle was removed, but its visual explosion could not be spawned.");
         }
+    }
+
+    private void PrepareExplosionVisuals()
+    {
+        if (_explosionMesh?.IsLoaded == true &&
+            _flashMaterial?.IsLoaded == true &&
+            _smokeMaterial?.IsLoaded == true) return;
+        _explosionMesh = _context!.Assets.CreateMesh(
+            "Crash Explosion Octahedron",
+            OctahedronGeometry(),
+            uploadMeshData: true);
+        _flashMaterial = CreateExplosionMaterial(
+            "Crash Explosion Flash", new UnityColor(1f, 0.22f, 0.015f, 1f));
+        _smokeMaterial = CreateExplosionMaterial(
+            "Crash Explosion Smoke", new UnityColor(0.12f, 0.12f, 0.12f, 1f));
+        CreateResourceAnchor();
+    }
+
+    private void CreateResourceAnchor()
+    {
+        _resourceAnchor = _context!.Unity.CreateGameObject("Crash & Drift VFX Resources");
+        _context.Unity.DontDestroyOnLoad(_resourceAnchor);
+        AnchorMaterial("Flash", _flashMaterial!);
+        AnchorMaterial("Smoke", _smokeMaterial!);
+        _context.Unity.SetActive(_resourceAnchor, false);
+    }
+
+    private void AnchorMaterial(string name, IModMaterial material)
+    {
+        var child = _context!.Unity.CreateGameObject(name, _resourceAnchor);
+        var filter = _context.Unity.AddComponent(
+            child, CoreAssembly, "UnityEngine", "MeshFilter");
+        var renderer = _context.Unity.AddComponent(
+            child, CoreAssembly, "UnityEngine", "MeshRenderer");
+        _resourceAnchorBindings.Add(_context.Assets.BindMeshFilter(filter, _explosionMesh!));
+        _resourceAnchorBindings.Add(_context.Assets.BindRendererMaterial(renderer, 0, material));
+    }
+
+    private IModMaterial CreateExplosionMaterial(string name, UnityColor color)
+    {
+        var material = _context!.Assets.CreateMaterial("Universal Render Pipeline/Unlit", name);
+        if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+        else if (material.HasProperty("_Color")) material.SetColor("_Color", color);
+        return material;
+    }
+
+    private void SpawnExplosionEffect(
+        UnityVector3 position,
+        string suffix,
+        IModMaterial material,
+        float startScale,
+        float maxScale,
+        float duration)
+    {
+        var gameObject = _context!.Unity.CreateGameObject($"Crash & Drift {suffix}");
+        _context.Unity.SetTransform(
+            gameObject,
+            new UnityTransform(
+                position,
+                UnityQuaternion.Identity,
+                new UnityVector3(startScale, startScale, startScale)));
+        var filter = _context.Unity.AddComponent(
+            gameObject, CoreAssembly, "UnityEngine", "MeshFilter");
+        var renderer = _context.Unity.AddComponent(
+            gameObject, CoreAssembly, "UnityEngine", "MeshRenderer");
+        var meshBinding = _context.Assets.BindMeshFilter(filter, _explosionMesh!);
+        var materialBinding = _context.Assets.BindRendererMaterial(renderer, 0, material);
+        _explosionEffects.Add(new ExplosionEffect(
+            gameObject,
+            meshBinding,
+            materialBinding,
+            position,
+            startScale,
+            maxScale,
+            duration));
+    }
+
+    private void UpdateExplosionEffects(float deltaTime)
+    {
+        for (var index = _explosionEffects.Count - 1; index >= 0; --index)
+        {
+            var effect = _explosionEffects[index];
+            effect.Age += deltaTime;
+            if (effect.Age >= effect.Duration)
+            {
+                DisposeExplosionEffect(effect);
+                _explosionEffects.RemoveAt(index);
+                continue;
+            }
+            var progress = effect.Age / effect.Duration;
+            var pulse = MathF.Sin(progress * MathF.PI);
+            var scale = effect.StartScale + (effect.MaxScale - effect.StartScale) * pulse;
+            _context!.Unity.SetTransform(
+                effect.GameObject,
+                new UnityTransform(
+                    effect.Position,
+                    UnityQuaternion.Identity,
+                    new UnityVector3(scale, scale, scale)));
+        }
+    }
+
+    private void ClearExplosionEffects()
+    {
+        foreach (var effect in _explosionEffects.ToArray()) DisposeExplosionEffect(effect);
+        _explosionEffects.Clear();
+    }
+
+    private void ReleaseExplosionVisuals()
+    {
+        ClearExplosionEffects();
+        for (var index = _resourceAnchorBindings.Count - 1; index >= 0; --index)
+            _resourceAnchorBindings[index].Dispose();
+        _resourceAnchorBindings.Clear();
+        if (_context is not null && !_resourceAnchor.IsNull)
+            _context.Unity.Destroy(_resourceAnchor);
+        _resourceAnchor = default;
+        _explosionMesh?.Dispose();
+        _flashMaterial?.Dispose();
+        _smokeMaterial?.Dispose();
+        _explosionMesh = null;
+        _flashMaterial = null;
+        _smokeMaterial = null;
+    }
+
+    private void DisposeExplosionEffect(ExplosionEffect effect)
+    {
+        effect.MaterialBinding.Dispose();
+        effect.MeshBinding.Dispose();
+        if (_context is not null) _context.Unity.Destroy(effect.GameObject);
+    }
+
+    private static ModMeshGeometry OctahedronGeometry()
+    {
+        UnityVector3[] vertices =
+        [
+            new(0f, 1f, 0f), new(1f, 0f, 0f), new(0f, 0f, 1f),
+            new(-1f, 0f, 0f), new(0f, 0f, -1f), new(0f, -1f, 0f)
+        ];
+        int[] indices =
+        [
+            0,2,1, 0,3,2, 0,4,3, 0,1,4,
+            5,1,2, 5,2,3, 5,3,4, 5,4,1
+        ];
+        return new ModMeshGeometry(vertices, [new ModSubMeshDefinition(indices)]);
     }
 
     private void ApplyDriftToLocalDriver()
@@ -353,7 +489,8 @@ public sealed class CrashAndDriftMod : IOFSMod
                     _vehicleComponentAssembly!,
                     "Gley.TrafficSystem",
                     "VehicleComponent");
-                if (!traffic.IsNull) return new VehicleTarget(current, VehicleKind.Traffic);
+                if (!traffic.IsNull)
+                    return new VehicleTarget(current, traffic.Pointer, VehicleKind.Traffic);
             }
 
             var transform = _context.Unity.TryGetComponent(
@@ -416,49 +553,6 @@ public sealed class CrashAndDriftMod : IOFSMod
         return value != 0 && Marshal.ReadByte(value) != 0;
     }
 
-    private void LoadExplosionVfx()
-    {
-        if (_vfxSet is not null) return;
-        try
-        {
-            _vfxSet = _context!.Assets.LoadBundleSet("Assets/Bundles/ofs-bundles.json");
-            var bundle = _vfxSet.GetBundle("ofs-crash-and-drift-vfx");
-            var prefabPath = bundle.AssetNames.SingleOrDefault(path =>
-                path.EndsWith("/crashexplosion.prefab", StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidDataException("CrashExplosion.prefab is absent from the VFX bundle.");
-            _explosionPrefab = bundle.LoadPrefab(prefabPath);
-            var smoke = _context.Unity.TryGetComponent(
-                _explosionPrefab,
-                ParticleAssembly,
-                "UnityEngine",
-                "ParticleSystem");
-            var fireObject = _context.Unity.FindChild(_explosionPrefab, "Fire Burst");
-            var sparksObject = _context.Unity.FindChild(_explosionPrefab, "Sparks");
-            var fire = fireObject.IsNull ? default : _context.Unity.TryGetComponent(
-                fireObject,
-                ParticleAssembly,
-                "UnityEngine",
-                "ParticleSystem");
-            var sparks = sparksObject.IsNull ? default : _context.Unity.TryGetComponent(
-                sparksObject,
-                ParticleAssembly,
-                "UnityEngine",
-                "ParticleSystem");
-            if (smoke.IsNull || fire.IsNull || sparks.IsNull)
-                throw new InvalidDataException(
-                    "CrashExplosion.prefab did not retain its three Unity particle systems.");
-            _context.Log.Info(
-                "Crash & Drift visual explosion prefab loaded: particles=3, damage=False.");
-        }
-        catch (Exception exception)
-        {
-            _vfxSet?.Unload(unloadLoadedObjects: false);
-            _vfxSet = null;
-            _explosionPrefab = default;
-            _context!.Log.Error(exception, "Crash & Drift VFX could not be loaded.");
-        }
-    }
-
     private void ResolveMetadata()
     {
         _sccNetworkClass = RequireClass(GameAssembly, string.Empty, "SCC_Network");
@@ -474,7 +568,6 @@ public sealed class CrashAndDriftMod : IOFSMod
         var collisionClass = RequireClass(PhysicsAssembly, "UnityEngine", "Collision");
         var componentClass = RequireClass(CoreAssembly, "UnityEngine", "Component");
         var transformClass = RequireClass(CoreAssembly, "UnityEngine", "Transform");
-        var networkServerClass = RequireClass("Mirror.dll", "Mirror", "NetworkServer");
 
         _netField = RequireField(audioClass, "net");
         _drivetrainField = RequireField(_sccNetworkClass, "drivetrain");
@@ -493,12 +586,10 @@ public sealed class CrashAndDriftMod : IOFSMod
         _collisionGetGameObject = RequireMethod(collisionClass, "get_gameObject", 0);
         _componentGetGameObject = RequireMethod(componentClass, "get_gameObject", 0);
         _transformGetParent = RequireMethod(transformClass, "get_parent", 0);
-        _networkServerDestroy = _api!.FindMethodBySignature(
-            networkServerClass,
-            "Destroy",
-            new[] { "UnityEngine.GameObject" });
-        if (_networkServerDestroy == 0)
-            throw new MissingMethodException("Mirror.NetworkServer.Destroy(UnityEngine.GameObject) was not found.");
+        if (_vehicleComponentClass == 0)
+            throw new TypeLoadException("Gley.TrafficSystem.VehicleComponent is required.");
+        _deactivateTrafficVehicle = RequireMethod(
+            _vehicleComponentClass, "DeactivateVehicle", 0);
     }
 
     private nint RequireClass(string assembly, string namespaze, string name)
@@ -566,7 +657,33 @@ public sealed class CrashAndDriftMod : IOFSMod
         float MinimumGrip,
         float DriftYawTorque);
 
-    private readonly record struct VehicleTarget(nint GameObject, VehicleKind Kind);
+    private readonly record struct VehicleTarget(
+        nint GameObject,
+        nint Component,
+        VehicleKind Kind)
+    {
+        public VehicleTarget(nint gameObject, VehicleKind kind)
+            : this(gameObject, 0, kind) { }
+    }
+
+    private sealed class ExplosionEffect(
+        UnityObject gameObject,
+        IModMeshBinding meshBinding,
+        IModRendererBinding materialBinding,
+        UnityVector3 position,
+        float startScale,
+        float maxScale,
+        float duration)
+    {
+        public UnityObject GameObject { get; } = gameObject;
+        public IModMeshBinding MeshBinding { get; } = meshBinding;
+        public IModRendererBinding MaterialBinding { get; } = materialBinding;
+        public UnityVector3 Position { get; } = position;
+        public float StartScale { get; } = startScale;
+        public float MaxScale { get; } = maxScale;
+        public float Duration { get; } = duration;
+        public float Age { get; set; }
+    }
 
     private enum VehicleKind
     {

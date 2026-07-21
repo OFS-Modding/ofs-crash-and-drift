@@ -14,14 +14,9 @@
 
   <ItemGroup>
     <Compile Remove="authoring\**\*.cs" />
-    <PackageReference Include="OFS.Sdk" Version="0.1.0" ExcludeAssets="runtime" />
+    <PackageReference Include="OFS.Sdk" Version="0.2.4" ExcludeAssets="runtime" />
     <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="README.md" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup Condition="Exists('Assets\Bundles\ofs-crash-and-drift-vfx')">
-    <None Include="Assets\Bundles\ofs-bundles.json" CopyToOutputDirectory="PreserveNewest" TargetPath="Assets\Bundles\ofs-bundles.json" />
-    <None Include="Assets\Bundles\ofs-crash-and-drift-vfx" CopyToOutputDirectory="PreserveNewest" TargetPath="Assets\Bundles\ofs-crash-and-drift-vfx" />
   </ItemGroup>
 
 </Project>
